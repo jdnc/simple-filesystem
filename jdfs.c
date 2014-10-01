@@ -30,77 +30,6 @@ int jdfs_getattr(const char *path, struct stat *statbuf)
     rc = ssh_channel_request_exec()
 }
 
-/** Read the target of a symbolic link
- *
- * The buffer should be filled with a null terminated string.  The
- * buffer size argument includes the space for the terminating
- * null character.  If the linkname is too long to fit in the
- * buffer, it should be truncated.  The return value should be 0
- * for success.
- */
-// Note the system readlink() will truncate and lose the terminating
-// null.  So, the size passed to to the system readlink() must be one
-// less than the size passed to bb_readlink()
-// bb_readlink() code by Bernardo F Costa (thanks!)
-int bb_readlink(const char *path, char *link, size_t size)
-{
-    int retstat = 0;
-    char fpath[PATH_MAX];
-    
-    log_msg("bb_readlink(path=\"%s\", link=\"%s\", size=%d)\n",
-	  path, link, size);
-    bb_fullpath(fpath, path);
-    
-    retstat = readlink(fpath, link, size - 1);
-    if (retstat < 0)
-	retstat = bb_error("bb_readlink readlink");
-    else  {
-	link[retstat] = '\0';
-	retstat = 0;
-    }
-    
-    return retstat;
-}
-
-/** Create a file node
- *
- * There is no create() operation, mknod() will be called for
- * creation of all non-directory, non-symlink nodes.
- */
-// shouldn't that comment be "if" there is no.... ?
-int bb_mknod(const char *path, mode_t mode, dev_t dev)
-{
-    int retstat = 0;
-    char fpath[PATH_MAX];
-    
-    log_msg("\nbb_mknod(path=\"%s\", mode=0%3o, dev=%lld)\n",
-	  path, mode, dev);
-    bb_fullpath(fpath, path);
-    
-    // On Linux this could just be 'mknod(path, mode, rdev)' but this
-    //  is more portable
-    if (S_ISREG(mode)) {
-        retstat = open(fpath, O_CREAT | O_EXCL | O_WRONLY, mode);
-	if (retstat < 0)
-	    retstat = bb_error("bb_mknod open");
-        else {
-            retstat = close(rtstat);
-	    if (retstat < 0)
-		retstat = bb_error("bb_mknod close");
-	}
-    } else
-	if (S_ISFIFO(mode)) {
-	    retstat = mkfifo(fpath, mode);
-	    if (retstat < 0)
-		retstat = bb_error("bb_mknod mkfifo");
-	} else {
-	    retstat = mknod(fpath, mode, dev);
-	    if (retstat < 0)
-		retstat = bb_error("bb_mknod mknod");
-	}
-    
-    return retstat;
-}
 
 /** Create a directory */
 int bb_mkdir(const char *path, mode_t mode)
@@ -153,27 +82,7 @@ int bb_rmdir(const char *path)
     return retstat;
 }
 
-/** Create a symbolic link */
-// The parameters here are a little bit confusing, but do correspond
-// to the symlink() system call.  The 'path' is where the link points,
-// while the 'link' is the link itself.  So we need to leave the path
-// unaltered, but insert the link into the mounted directory.
-int bb_symlink(const char *path, const char *link)
-{
-    int retstat = 0;
-    char flink[PATH_MAX];
-    
-    log_msg("\nbb_symlink(path=\"%s\", link=\"%s\")\n",
-	    path, link);
-    bb_fullpath(flink, link);
-    
-    retstat = symlink(path, flink);
-    if (retstat < 0)
-	retstat = bb_error("bb_symlink symlink");
-    
-    return retstat;
-}
-
+/
 /** Rename a file */
 // both path and newpath are fs-relative
 int bb_rename(const char *path, const char *newpath)
@@ -194,23 +103,7 @@ int bb_rename(const char *path, const char *newpath)
     return retstat;
 }
 
-/** Create a hard link to a file */
-int bb_link(const char *path, const char *newpath)
-{
-    int retstat = 0;
-    char fpath[PATH_MAX], fnewpath[PATH_MAX];
-    
-    log_msg("\nbb_link(path=\"%s\", newpath=\"%s\")\n",
-	    path, newpath);
-    bb_fullpath(fpath, path);
-    bb_fullpath(fnewpath, newpath);
-    
-    retstat = link(fpath, fnewpath);
-    if (retstat < 0)
-	retstat = bb_error("bb_link link");
-    
-    return retstat;
-}
+
 
 /** Change the permission bits of a file */
 int bb_chmod(const char *path, mode_t mode)
@@ -264,23 +157,6 @@ int bb_truncate(const char *path, off_t newsize)
     return retstat;
 }
 
-/** Change the access and/or modification times of a file */
-/* note -- I'll want to change this as soon as 2.6 is in debian testing */
-int bb_utime(const char *path, struct utimbuf *ubuf)
-{
-    int retstat = 0;
-    char fpath[PATH_MAX];
-    
-    log_msg("\nbb_utime(path=\"%s\", ubuf=0x%08x)\n",
-	    path, ubuf);
-    bb_fullpath(fpath, path);
-    
-    retstat = utime(fpath, ubuf);
-    if (retstat < 0)
-	retstat = bb_error("bb_utime utime");
-    
-    return retstat;
-}
 
 /** File open operation
  *
@@ -372,32 +248,6 @@ int bb_write(const char *path, const char *buf, size_t size, off_t offset,
     return retstat;
 }
 
-/** Get file system statistics
- *
- * The 'f_frsize', 'f_favail', 'f_fsid' and 'f_flag' fields are ignored
- *
- * Replaced 'struct statfs' parameter with 'struct statvfs' in
- * version 2.5
- */
-int bb_statfs(const char *path, struct statvfs *statv)
-{
-    int retstat = 0;
-    char fpath[PATH_MAX];
-    
-    log_msg("\nbb_statfs(path=\"%s\", statv=0x%08x)\n",
-	    path, statv);
-    bb_fullpath(fpath, path);
-    
-    // get stats for underlying filesystem
-    retstat = statvfs(fpath, statv);
-    if (retstat < 0)
-	retstat = bb_error("bb_statfs statvfs");
-    
-    log_statvfs(statv);
-    
-    return retstat;
-}
-
 /** Possibly flush cached data
  *
  * BIG NOTE: This is not equivalent to fsync().  It's not a
@@ -461,112 +311,6 @@ int bb_release(const char *path, struct fuse_file_info *fi)
     return retstat;
 }
 
-/** Synchronize file contents
- *
- * If the datasync parameter is non-zero, then only the user data
- * should be flushed, not the meta data.
- *
- * Changed in version 2.2
- */
-int bb_fsync(const char *path, int datasync, struct fuse_file_info *fi)
-{
-    int retstat = 0;
-    
-    log_msg("\nbb_fsync(path=\"%s\", datasync=%d, fi=0x%08x)\n",
-	    path, datasync, fi);
-    log_fi(fi);
-    
-    // some unix-like systems (notably freebsd) don't have a datasync call
-#ifdef HAVE_FDATASYNC
-    if (datasync)
-	retstat = fdatasync(fi->fh);
-    else
-#endif	
-	retstat = fsync(fi->fh);
-    
-    if (retstat < 0)
-	bb_error("bb_fsync fsync");
-    
-    return retstat;
-}
-
-#ifdef HAVE_SYS_XATTR_H
-/** Set extended attributes */
-int bb_setxattr(const char *path, const char *name, const char *value, size_t size, int flags)
-{
-    int retstat = 0;
-    char fpath[PATH_MAX];
-    
-    log_msg("\nbb_setxattr(path=\"%s\", name=\"%s\", value=\"%s\", size=%d, flags=0x%08x)\n",
-	    path, name, value, size, flags);
-    bb_fullpath(fpath, path);
-    
-    retstat = lsetxattr(fpath, name, value, size, flags);
-    if (retstat < 0)
-	retstat = bb_error("bb_setxattr lsetxattr");
-    
-    return retstat;
-}
-
-/** Get extended attributes */
-int bb_getxattr(const char *path, const char *name, char *value, size_t size)
-{
-    int retstat = 0;
-    char fpath[PATH_MAX];
-    
-    log_msg("\nbb_getxattr(path = \"%s\", name = \"%s\", value = 0x%08x, size = %d)\n",
-	    path, name, value, size);
-    bb_fullpath(fpath, path);
-    
-    retstat = lgetxattr(fpath, name, value, size);
-    if (retstat < 0)
-	retstat = bb_error("bb_getxattr lgetxattr");
-    else
-	log_msg("    value = \"%s\"\n", value);
-    
-    return retstat;
-}
-
-/** List extended attributes */
-int bb_listxattr(const char *path, char *list, size_t size)
-{
-    int retstat = 0;
-    char fpath[PATH_MAX];
-    char *ptr;
-    
-    log_msg("bb_listxattr(path=\"%s\", list=0x%08x, size=%d)\n",
-	    path, list, size
-	    );
-    bb_fullpath(fpath, path);
-    
-    retstat = llistxattr(fpath, list, size);
-    if (retstat < 0)
-	retstat = bb_error("bb_listxattr llistxattr");
-    
-    log_msg("    returned attributes (length %d):\n", retstat);
-    for (ptr = list; ptr < list + retstat; ptr += strlen(ptr)+1)
-	log_msg("    \"%s\"\n", ptr);
-    
-    return retstat;
-}
-
-/** Remove extended attributes */
-int bb_removexattr(const char *path, const char *name)
-{
-    int retstat = 0;
-    char fpath[PATH_MAX];
-    
-    log_msg("\nbb_removexattr(path=\"%s\", name=\"%s\")\n",
-	    path, name);
-    bb_fullpath(fpath, path);
-    
-    retstat = lremovexattr(fpath, name);
-    if (retstat < 0)
-	retstat = bb_error("bb_removexattr lrmovexattr");
-    
-    return retstat;
-}
-#endif
 
 /** Open directory
  *
@@ -669,26 +413,6 @@ int bb_releasedir(const char *path, struct fuse_file_info *fi)
     log_fi(fi);
     
     closedir((DIR *) (uintptr_t) fi->fh);
-    
-    return retstat;
-}
-
-/** Synchronize directory contents
- *
- * If the datasync parameter is non-zero, then only the user data
- * should be flushed, not the meta data
- *
- * Introduced in version 2.3
- */
-// when exactly is this called?  when a user calls fsync and it
-// happens to be a directory? ???
-int bb_fsyncdir(const char *path, int datasync, struct fuse_file_info *fi)
-{
-    int retstat = 0;
-    
-    log_msg("\nbb_fsyncdir(path=\"%s\", datasync=%d, fi=0x%08x)\n",
-	    path, datasync, fi);
-    log_fi(fi);
     
     return retstat;
 }
