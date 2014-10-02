@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <libssh/sftp.h>
 #include <libssh/libssh.h>
+#include <sys/stat.h>
 
 
 #define BUFSIZE 16384
@@ -23,22 +24,6 @@ typedef struct jdfs_state {
 } jdfs_state;
 
 #define JDFS_DATA ((jdfs_state *) fuse_get_context()->private_data)
-
-/*int jdfs_getattr(const char *path, struct stat *statbuf)
-{
-    ssh_channel channel = ssh_channel_new(*JDFS_DATA->session);
-    if (ssh_channel == NULL) {
-        perror("get_attr: could not open new ssh channel");
-   	exit(-1);
-    }
-    int rc = ssh_channel_open_session(channel);
-    if (rc != SSH_OK) {
-        perror("getattr: ssh_channel_open_session failed");
-        ssh_channel_free(channel);
-	exit(-1);
-    }
-    rc = ssh_channel_request_exec()
-}*/
 
 
 /** Create a directory */
@@ -185,34 +170,23 @@ int jdfs_chown(const char *path, uid_t uid, gid_t gid)
 /** File open operation */
 int jdfs_open(const char *path, struct fuse_file_info *fi)
 {
-    char full_path[2048];
-    char prefix[1600];
+    if (!path || path[0] == '\0')
+        return -ENOENT;
+    if (strcmp(path, "/") == 0)
+        return -ENOENT;
     int access_type;
     sftp_file file;
     char buffer[BUFSIZE];
     int nbytes, nwritten;
     int fd;
     int rc;
+    char full_path[512];
     strcpy(full_path, JDFS_DATA->base_path);
-    strncat(full_path, path, 1600);
+    strcat(full_path, path);
     rc = access(full_path, F_OK);
     if (rc < 0) {
-            char * pos = strrchr(path, '/');
-            if (pos != NULL) {
-		*pos = '\0';
-		strcpy(prefix, path);
-		*pos = '/';
-                char tmp_path[2048];
-                char cmdstring[2048] = "mkdir -p ";
-		strcpy(tmp_path, JDFS_DATA->base_path);
-                strcat(tmp_path, prefix);
-                strcat(cmdstring, tmp_path);
-                rc = system(cmdstring);
-                if (rc < 0) {
-		    fprintf(stderr, "open: cannot cache file locally");
-                    return -1;
-                }
-            }
+            char new_path[512];
+            strcpy (new_path, path + 1);
 	    sftp_session sftp = sftp_new(*(JDFS_DATA->session));
 	    if (sftp == NULL) {
 		perror("open: could not create sftp session");
@@ -225,7 +199,7 @@ int jdfs_open(const char *path, struct fuse_file_info *fi)
 		exit(rc);
 	    }
 	    access_type = O_RDONLY;
-	    file = sftp_open(sftp, path,
+	    file = sftp_open(sftp, new_path,
 		           access_type, 0);
 	    if (file == NULL) {
 		fprintf(stderr, "open: Can't open file for reading: %s\n",
@@ -299,12 +273,14 @@ int jdfs_flush(const char *path, struct fuse_file_info *fi)
         int access_type;
         sftp_file file;
         char full_path[2048];
+        char new_path[2048];
         char buffer[BUFSIZE];
         int nbytes, nwritten;
         int fd;
         int rc;
 	close(fi->fh);
         strcpy(full_path, JDFS_DATA->base_path);
+        strcpy(new_path, path + 1);
         strcat(full_path, path);
 	sftp_session sftp = sftp_new(*(JDFS_DATA->session));
 	    if (sftp == NULL) {
@@ -318,7 +294,7 @@ int jdfs_flush(const char *path, struct fuse_file_info *fi)
 		exit(rc);
 	    }
 	    access_type = O_WRONLY | O_CREAT | O_TRUNC;
-	    file = sftp_open(sftp, path,
+	    file = sftp_open(sftp, new_path,
 			   access_type, S_IRWXU);
 	    if (file == NULL) {
 		fprintf(stderr, "flush: Can't open file for writing: %s\n",
@@ -365,55 +341,151 @@ int jdfs_flush(const char *path, struct fuse_file_info *fi)
 int jdfs_access(const char *path, int mask) 
 {
   return 0;
+  if (path == NULL || path[0] == '\0')
+            return -ENOENT;
+  if (strcmp(path, "/") == 0) {
+      return access(JDFS_DATA->base_path, F_OK);
+  }
+  char full_path[512];
+  strcpy(full_path, JDFS_DATA->base_path);
+  strcat(full_path, path);
+  return access (full_path, F_OK);
+}
 
+int jdfs_opendir (const char *path, struct fuse_file_info *fi)
+{
+     DIR *dp;
+     int retstat = 0;
+     if (path == NULL || path[0] == '\0')
+            return -ENOENT;
+     if (strcmp(path, "/") == 0) {
+         dp = opendir(JDFS_DATA->base_path);
+         if (dp == NULL){
+	     perror("opendir");
+             retstat = -1;
+          }
+          fi->fh = (intptr_t) dp;
+     }
+     return retstat;
+}
+
+int jdfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
+	       struct fuse_file_info *fi) 
+{
+        int rc = 0;
+        if (path == NULL || path[0] == '\0')
+            return -ENOENT;
+        if (strcmp(path, "/") == 0)
+	{
+            DIR *dp;
+            struct dirent *de;
+            dp = (DIR *) (uintptr_t) fi->fh;
+            de = readdir(dp);
+            if (de == 0) {
+	        perror("readdir error");
+                return -1;
+            }
+            do {
+	        if (filler(buf, de->d_name, NULL, 0) != 0);
+	            return -ENOMEM;
+	        
+            } while ((de = readdir(dp)) != NULL);
+            return 0;
+        }
+        char new_path[512];
+        strcpy(new_path, path + 1);
+        sftp_attributes attributes;
+        sftp_dir dir;
+	sftp_session sftp = sftp_new(*(JDFS_DATA->session));
+	if (sftp == NULL) {
+            perror("readdir: could not create sftp session");
+	    exit(SSH_ERROR);
+	}
+	rc = sftp_init(sftp);
+	if (rc != SSH_OK) {
+	   perror("flush: sftp init failed");
+	   sftp_free(sftp);
+	   exit(rc);
+	}
+        dir = sftp_opendir(sftp, path);
+        if (!dir)
+        {
+            fprintf(stderr, "readdir: Directory not opened: %s\n",
+            ssh_get_error(*(JDFS_DATA->session)));
+            return SSH_ERROR;
+        }
+	while ((attributes = sftp_readdir(sftp, dir)) != NULL)
+        {
+             if (filler(buf, attributes->name, NULL, 0) != 0) {
+                 fprintf(stderr, "readdir: Buffer error\n");
+                 exit(-1);
+             }
+             sftp_attributes_free(attributes);
+        }
+        if (!sftp_dir_eof(dir))
+        {
+            fprintf(stderr, "readdir: Can't list directory:\n");
+            sftp_closedir(dir);
+            return SSH_ERROR;
+        }
+        rc = sftp_closedir(dir);
+        if (rc != SSH_OK)
+        {
+            fprintf(stderr, "readdir: Can't close directory\n");
+            return rc;
+        }    	     
+	sftp_free(sftp);
+        return 0;
 }
 
 int jdfs_getattr(const char* path, struct stat* statbuf)
-{
-   char cmdstring[4096] = "stat --printf \'%a\n%h\n%u\n%g\n%t\n%s\n%o\n%b\n%X\n%Y\n%Z\n\' ";
-   strcat(cmdstring, path);
-   char buffer[4096];
-   ssh_channel channel;
-   int rc;
-   channel = ssh_channel_new(*(JDFS_DATA->session));
-   if (channel == NULL) return SSH_ERROR;
-   rc = ssh_channel_open_session(channel);
-   if (rc != SSH_OK)
-   {
-        ssh_channel_free(channel);
-        return rc;
-   }
-   rc = ssh_channel_request_exec(channel, cmdstring);
-   if (rc != SSH_OK)
-   {
-      ssh_channel_close(channel);
-      ssh_channel_free(channel);
-      return rc;
-   }
-   unsigned int nbytes;
-   nbytes = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
-   while (nbytes > 0)
-   {
-      if (fwrite(buffer, 1, nbytes, stdout) != nbytes)
-      {
-           ssh_channel_close(channel);
-    	   ssh_channel_free(channel);
-           return SSH_ERROR;
-      }
-      nbytes = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
-    }
-    if (nbytes < 0)
-    {
-         ssh_channel_close(channel);
-         ssh_channel_free(channel);
-         return SSH_ERROR;
-    }
-    ssh_channel_send_eof(channel);
-    ssh_channel_close(channel);
-    ssh_channel_free(channel);
-    fprintf(stderr, "stat: %s", buffer);
-    return 0;
+{       
+       memset(statbuf, 0, sizeof(struct stat));
+       if (path == NULL || path[0] == '\0')
+          return -ENOENT;
+       if (strcmp(path, "/") == 0) {
+            return lstat(JDFS_DATA->base_path, statbuf);     
+        }
+	    
+        char new_path[512];
+        strcpy(new_path, path + 1);
+	char cmdstring[512]; 
+	char buffer [512]; 
+        strcpy(cmdstring,"ssh mparikh@linux.cs.utexas.edu \"stat --printf \"\%a\\n\%h\\n\%u\\n\%g\\n\%t\\n\%s\\n\%o\\n\%b\\n\%X\\n\%Y\\n\%Z\\n\"\" ");
+	strcat(cmdstring, new_path);
+	strcat(cmdstring, " | cat > stat.out");
+	system(cmdstring);
+	int fd = open("stat.out", O_RDONLY);
+	int nread = read(fd, buffer, sizeof(buffer));
+	char *pos; 
+	statbuf-> st_dev = 0;
+	statbuf-> st_ino = 0;
+	statbuf->st_mode = strtol(buffer, &pos, 8);
+	fprintf(stderr, "%o\n", statbuf->st_mode);
+        statbuf->st_mode = S_IFREG;
+	statbuf->st_nlink = strtol(pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_nlink);
+	statbuf->st_uid = strtol(pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_uid);
+	statbuf->st_gid = strtol(pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_gid);
+	statbuf->st_rdev = strtol (pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_rdev);
+	statbuf->st_size = strtol (pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_size);
+	statbuf->st_blksize = strtol(pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_blksize);
+	statbuf->st_blocks = strtol(pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_blocks);
+	statbuf->st_atime = strtol(pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_atime);
+	statbuf->st_mtime = strtol(pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_mtime);
+	statbuf->st_ctime =  strtol(pos + 1, &pos, 10);
+	fprintf(stderr, "%ld\n", statbuf->st_ctime);
+	return 0;
 }
+
 /**
  * Initialize qfilesystem
  *
@@ -459,8 +531,8 @@ struct fuse_operations jdfs_oper = {
   .flush = jdfs_flush,
 //  .release = bb_release,
 //  .fsync = bb_fsync,  
-//  .opendir = bb_opendir,
-//  .readdir = bb_readdir,
+   .opendir = jdfs_opendir,
+   .readdir = jdfs_readdir,
 //  .releasedir = bb_releasedir,
 //  .fsyncdir = bb_fsyncdir,
      .init = jdfs_init,
